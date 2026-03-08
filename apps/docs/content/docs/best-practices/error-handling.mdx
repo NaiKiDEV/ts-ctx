@@ -1,0 +1,105 @@
+---
+title: Error Handling
+description: Distinguishing cancellation from real errors and propagating them correctly.
+---
+
+# Error Handling
+
+When a context is canceled, APIs that respect `AbortSignal` throw an `AbortError`. If your error handling doesn't account for this, you'll log or display errors that are not actually failures — just expected cancellations.
+
+## Checking before handling
+
+Always check the signal before treating a caught error as a real failure.
+
+```ts
+async function fetchUser(ctx: Context, id: string): Promise<User> {
+  try {
+    const res = await fetch(`/api/users/${id}`, { signal: ctx.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  } catch (err) {
+    if (ctx.signal.aborted) return Promise.reject(ctx.signal.reason);
+    throw err;
+  }
+}
+```
+
+Re-throwing `ctx.signal.reason` instead of the original `AbortError` preserves the distinction between a timeout (`DeadlineExceeded`) and a manual cancel (`Canceled`) all the way up the call stack.
+
+## Classifying the reason
+
+```ts
+function isCanceled(ctx: Context) {
+  return ctx.signal.aborted && ctx.signal.reason === context.Canceled;
+}
+
+function isTimedOut(ctx: Context) {
+  return ctx.signal.aborted && ctx.signal.reason === context.DeadlineExceeded;
+}
+```
+
+Use these at the top-level boundary — a request handler, an effect cleanup, or a UI error boundary — rather than deep inside individual functions. Inner functions should propagate; outer boundaries should classify and respond.
+
+## Top-level boundary pattern
+
+```ts
+async function handleRequest(ctx: Context, req: Request): Promise<Response> {
+  try {
+    const data = await processRequest(ctx, req);
+    return Response.json(data);
+  } catch (err) {
+    if (isTimedOut(ctx))  return new Response("timeout",  { status: 504 });
+    if (isCanceled(ctx))  return new Response("canceled", { status: 499 });
+    console.error("unhandled error", err);
+    return new Response("error", { status: 500 });
+  }
+}
+```
+
+## Avoiding error suppression
+
+A common mistake is swallowing all errors when the context is aborted.
+
+```ts
+// ❌ silences real errors if the context happens to be canceled
+catch (err) {
+  if (ctx.signal.aborted) return;
+  throw err;
+}
+```
+
+If a real error (network failure, invalid response) happens to coincide with a cancellation, it is silently lost. Prefer re-throwing the signal reason so the cause is always explicit.
+
+```ts
+// ✓ re-throws with the actual cancellation reason
+catch (err) {
+  if (ctx.signal.aborted) throw ctx.signal.reason;
+  throw err;
+}
+```
+
+## Parallel operations
+
+When using `Promise.all` or `Promise.allSettled`, a canceled signal will reject individual promises. With `Promise.all`, the first rejection short-circuits and the rest are abandoned (the signal is already aborted, so they will reject quickly too).
+
+```ts
+const [user, permissions] = await Promise.all([
+  fetchUser(ctx, userId),
+  fetchPermissions(ctx, userId),
+]);
+```
+
+If you need the results of all settled promises regardless of cancellation:
+
+```ts
+const results = await Promise.allSettled([
+  fetchUser(ctx, userId),
+  fetchPermissions(ctx, userId),
+]);
+
+if (ctx.signal.aborted) throw ctx.signal.reason;
+
+const [user, permissions] = results.map((r) =>
+  r.status === "fulfilled" ? r.value : null,
+);
+```

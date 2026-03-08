@@ -1,0 +1,139 @@
+---
+title: Testing
+description: Testing cancellation, timeouts, and value propagation with fake timers.
+---
+
+# Testing
+
+ts-ctx uses `setTimeout` and `Date.now()` internally. Vitest's fake timers control both, making timeout and deadline behavior fully deterministic in tests.
+
+## Setup
+
+```ts
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { context } from "@naikidev/ts-ctx";
+
+describe("my feature", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+});
+```
+
+Only enable fake timers in describe blocks that test timing behavior. Tests for value propagation or manual cancellation don't need them.
+
+## Testing cancellation
+
+```ts
+it("cancels in-flight work when context is canceled", async () => {
+  const [ctx, cancel] = context.withCancel(context.background());
+
+  let aborted = false;
+  ctx.signal.addEventListener("abort", () => { aborted = true; });
+
+  cancel();
+
+  expect(aborted).toBe(true);
+  expect(ctx.signal.reason).toBe(context.Canceled);
+});
+```
+
+## Testing timeout behavior
+
+```ts
+it("aborts after the timeout duration", () => {
+  const [ctx, cancel] = context.withTimeout(context.background(), 3000);
+
+  expect(ctx.signal.aborted).toBe(false);
+  vi.advanceTimersByTime(3000);
+  expect(ctx.signal.aborted).toBe(true);
+  expect(ctx.signal.reason).toBe(context.DeadlineExceeded);
+
+  cancel(); // safe to call — no-op
+});
+```
+
+## Testing cancellation of async work
+
+Functions that accept a context should reject or return early when the signal aborts. Test both the happy path and the canceled path.
+
+```ts
+async function fetchWithContext(ctx: Context, url: string) {
+  const res = await fetch(url, { signal: ctx.signal });
+  return res.json();
+}
+
+it("rejects when context is canceled before fetch resolves", async () => {
+  const [ctx, cancel] = context.withCancel(context.background());
+
+  global.fetch = vi.fn(() => new Promise(() => {})); // never resolves
+
+  const promise = fetchWithContext(ctx, "/api/data");
+  cancel();
+
+  await expect(promise).rejects.toThrow();
+  expect(ctx.signal.aborted).toBe(true);
+});
+```
+
+## Testing value propagation
+
+```ts
+const userKey    = context.createKey<string>("user");
+const tenantKey  = context.createKey<string>("tenant");
+
+it("retrieves values through a derived context chain", () => {
+  const root = context.withValue(
+    context.withValue(context.background(), userKey, "alice"),
+    tenantKey, "acme",
+  );
+
+  const [child] = context.withCancel(root);
+  const grandchild = context.withValue(child, userKey, "bob"); // shadow
+
+  expect(child.value(userKey)).toBe("alice");
+  expect(child.value(tenantKey)).toBe("acme");
+  expect(grandchild.value(userKey)).toBe("bob");      // shadowed
+  expect(grandchild.value(tenantKey)).toBe("acme");   // inherited
+});
+```
+
+## Testing deadline budget enforcement
+
+```ts
+it("child cannot exceed parent deadline", () => {
+  const [parent] = context.withTimeout(context.background(), 1000);
+  const [child]  = context.withTimeout(parent, 10_000); // requests 10s
+
+  // child is capped at the parent's 1s deadline
+  expect(child.deadline).toBe(parent.deadline);
+
+  vi.advanceTimersByTime(1000);
+  expect(parent.signal.aborted).toBe(true);
+  expect(child.signal.aborted).toBe(true);
+});
+```
+
+## Testing helper
+
+When multiple tests need a pre-canceled or pre-timed-out context, extract a factory to keep tests readable.
+
+```ts
+function canceledCtx(reason?: unknown) {
+  const [ctx, cancel] = context.withCancel(context.background());
+  cancel(reason);
+  return ctx;
+}
+
+function timedOutCtx() {
+  const [ctx] = context.withDeadline(context.background(), Date.now() - 1);
+  return ctx;
+}
+```
+
+```ts
+it("returns early when context is already canceled", async () => {
+  const ctx = canceledCtx();
+  const result = await myFunction(ctx);
+  expect(result).toBeNull();
+});
+```

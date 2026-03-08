@@ -1,0 +1,74 @@
+---
+title: Always Cancel
+description: Why cancel must always be called and how to guarantee it with try/finally.
+---
+
+# Always Cancel
+
+Every `withCancel`, `withTimeout`, and `withDeadline` call registers an event listener on the parent's `AbortSignal`. That listener is only removed when `cancel()` is called. If you never call it, the listener stays registered for the lifetime of the parent context — a memory leak that compounds across requests or renders.
+
+## The rule
+
+Always call `cancel()` in a `finally` block.
+
+```ts
+const [ctx, cancel] = context.withTimeout(parent, 5000);
+try {
+  return await fetchUser(ctx, userId);
+} finally {
+  cancel();
+}
+```
+
+This holds even when the timeout fires on its own. Calling `cancel()` on an already-aborted context is a no-op — the only effect is removing the parent listener, which is exactly what you want.
+
+## Why `withValue` is the exception
+
+`context.withValue` does not register any listeners. It shares the parent's signal directly and requires no cleanup.
+
+```ts
+const ctx = context.withValue(parent, requestIdKey, id); // no cancel needed
+```
+
+## Wrapping async functions
+
+When a function owns a derived context, it should create, use, and clean up within its own scope.
+
+```ts
+async function loadDashboard(parent: Context, userId: string) {
+  const [ctx, cancel] = context.withTimeout(parent, 10_000);
+  try {
+    const [user, stats] = await Promise.all([
+      fetchUser(ctx, userId),
+      fetchStats(ctx, userId),
+    ]);
+    return { user, stats };
+  } finally {
+    cancel();
+  }
+}
+```
+
+The caller passes a parent context with its own deadline or cancel — `loadDashboard` adds a local timeout budget on top without affecting the caller's context.
+
+## Using `Symbol.dispose` (TypeScript 5.2+)
+
+If your project targets ES2022+ with `"lib": ["esnext"]`, you can use the explicit resource management proposal to tie cleanup to lexical scope:
+
+```ts
+function makeContext(parent: Context, ms: number) {
+  const [ctx, cancel] = context.withTimeout(parent, ms);
+  return Object.assign([ctx, cancel] as const, {
+    [Symbol.dispose]: cancel,
+  });
+}
+
+async function loadDashboard(parent: Context, userId: string) {
+  using handle = makeContext(parent, 10_000);
+  const [ctx] = handle;
+  return await fetchUser(ctx, userId);
+  // cancel() called automatically at end of block
+}
+```
+
+This is ergonomic for deeply nested scopes where `try/finally` adds noise. The `try/finally` pattern remains the safe default for broader compatibility.

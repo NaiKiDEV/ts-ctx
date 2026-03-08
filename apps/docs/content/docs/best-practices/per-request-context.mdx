@@ -1,0 +1,124 @@
+---
+title: Per-Request Context
+description: Structuring context creation at the server request boundary for Node.js and edge runtimes.
+---
+
+# Per-Request Context
+
+The most important place to create a context is at the entry point of a unit of work — an HTTP request, a queue job, a WebSocket message. Everything downstream receives a derived context, never creates its own root.
+
+## The pattern
+
+Create one context per request at the boundary. Attach request metadata as values. Pass it as the first argument to every function that does I/O.
+
+```ts
+import { context, type Context } from "@naikidev/ts-ctx";
+
+const requestIdKey = context.createKey<string>("requestId");
+const userKey      = context.createKey<User>("user");
+```
+
+## Node.js HTTP (built-in)
+
+Use `request.signal` (available in Node 18+) as the parent signal so the context is automatically canceled if the client disconnects.
+
+```ts
+import { createServer } from "node:http";
+
+createServer(async (req, res) => {
+  const [ctx, cancel] = context.withTimeout(
+    context.withValue(
+      context.withValue(context.background(), requestIdKey, crypto.randomUUID()),
+      userKey, await authenticate(req),
+    ),
+    30_000,
+  );
+
+  try {
+    const data = await handleRequest(ctx, req);
+    res.writeHead(200).end(JSON.stringify(data));
+  } catch (err) {
+    if (ctx.signal.aborted) {
+      res.writeHead(499).end();
+    } else {
+      res.writeHead(500).end();
+    }
+  } finally {
+    cancel();
+  }
+});
+```
+
+## Express middleware
+
+Create the context in middleware and attach it to `res.locals` so downstream handlers can access it without prop-drilling through Express's callback chain.
+
+```ts
+import type { RequestHandler } from "express";
+
+const requestContextMiddleware: RequestHandler = async (req, res, next) => {
+  const [ctx, cancel] = context.withTimeout(context.background(), 30_000);
+
+  res.locals.ctx = context.withValue(
+    context.withValue(ctx, requestIdKey, req.headers["x-request-id"] ?? crypto.randomUUID()),
+    userKey, await authenticate(req),
+  );
+
+  res.on("finish", cancel);
+  res.on("close", cancel);
+
+  next();
+};
+```
+
+```ts
+app.get("/users/:id", async (req, res) => {
+  const ctx: Context = res.locals.ctx;
+  const user = await fetchUser(ctx, req.params.id);
+  res.json(user);
+});
+```
+
+Listening to both `finish` and `close` ensures cancel is called whether the response completes normally or the client disconnects mid-stream.
+
+## Hono (edge / Cloudflare Workers)
+
+Hono exposes the incoming `Request` object directly, which carries an `AbortSignal` via `request.signal` in edge environments.
+
+```ts
+import { Hono } from "hono";
+
+const app = new Hono();
+
+app.use(async (c, next) => {
+  const [ctx, cancel] = context.withTimeout(context.background(), 10_000);
+
+  c.set("ctx", context.withValue(ctx, requestIdKey, c.req.header("x-request-id") ?? crypto.randomUUID()));
+
+  c.executionCtx.waitUntil(Promise.resolve().then(cancel));
+  await next();
+  cancel();
+});
+```
+
+## Key organization
+
+Keep all keys for a domain in one file. Export them as a group so imports stay clean.
+
+```ts
+// lib/context-keys.ts
+import { context } from "@naikidev/ts-ctx";
+
+export const keys = {
+  requestId: context.createKey<string>("requestId"),
+  user:      context.createKey<User>("user"),
+  logger:    context.createKey<Logger>("logger"),
+  traceId:   context.createKey<string>("traceId"),
+} as const;
+```
+
+```ts
+import { keys } from "@/lib/context-keys";
+
+const logger = ctx.value(keys.logger);
+```

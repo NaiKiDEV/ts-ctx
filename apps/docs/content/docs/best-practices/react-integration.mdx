@@ -1,0 +1,174 @@
+---
+title: React Integration
+description: Wiring context into React hooks and effects without leaking listeners on unmount.
+---
+
+# React Integration
+
+React's `useEffect` cleanup function maps naturally onto context's cancel function. The pattern is consistent regardless of what the context is used for.
+
+## Basic pattern
+
+```ts
+import { useEffect, useState } from "react";
+import { context, type Context } from "@naikidev/ts-ctx";
+
+function useUser(parent: Context, userId: string) {
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    const [ctx, cancel] = context.withTimeout(parent, 5000);
+
+    fetchUser(ctx, userId)
+      .then(setUser)
+      .catch((err) => {
+        if (ctx.signal.aborted) return; // canceled on unmount — ignore
+        throw err;
+      });
+
+    return cancel;
+  }, [userId]);
+
+  return user;
+}
+```
+
+Returning `cancel` directly from the effect is equivalent to `return () => cancel()` — both work.
+
+## Canceling multiple event listeners
+
+`addEventListener` accepts a `signal` option that automatically removes the listener when the signal aborts. This means a single `cancel()` call cleans up any number of listeners — no manual `removeEventListener` calls needed.
+
+```ts
+useEffect(() => {
+  const [ctx, cancel] = context.withCancel(parent);
+
+  window.addEventListener("resize", onResize, { signal: ctx.signal });
+  window.addEventListener("scroll", onScroll, { signal: ctx.signal });
+  document.addEventListener("visibilitychange", onVisibility, { signal: ctx.signal });
+
+  return cancel; // all three listeners removed on unmount
+}, []);
+```
+
+This composes well with the rest of ts-ctx — if the parent context is canceled (e.g. the user navigated away), all derived listeners are removed without the component needing to do anything.
+
+## Using a stable root context
+
+Rather than passing a context as a prop through the component tree, provide one via React context. The provider itself uses `background()` — each hook or effect derives and owns its own context from there.
+
+```tsx
+import { createContext, useContext, type ReactNode } from "react";
+import { context, type Context } from "@naikidev/ts-ctx";
+
+const ContextRoot = createContext<Context>(context.background());
+
+export function ContextProvider({ children }: { children: ReactNode }) {
+  return <ContextRoot value={context.background()}>{children}</ContextRoot>;
+}
+
+export const useCtx = () => useContext(ContextRoot);
+```
+
+When a provider unmounts, React unmounts all children first — every effect cleanup fires in order, calling each hook's individual `cancel`. The cascade already happens through React's lifecycle without the provider needing to manage it.
+
+## Cancelable scope
+
+For cases where you need to cancel all operations in a section of the tree imperatively — a search page resetting mid-flight, a wizard canceling steps on dismiss — use a dedicated `CancelableScope` that exposes its cancel function through a second context.
+
+```tsx
+import { createContext, useContext, useReducer, useEffect, useRef, type ReactNode } from "react";
+import { context, type Context, type CancelFunc } from "@naikidev/ts-ctx";
+
+const CtxRoot   = createContext<Context>(context.background());
+const CancelCtx = createContext<CancelFunc>(() => {});
+
+export function CancelableScope({ children }: { children: ReactNode }) {
+  const [, rerender] = useReducer(n => n + 1, 0);
+  const pairRef = useRef(context.withCancel(context.background()));
+
+  useEffect(() => {
+    // React Strict Mode runs cleanup then re-mounts — recreate if aborted
+    if (pairRef.current[0].signal.aborted) {
+      pairRef.current = context.withCancel(context.background());
+      rerender();
+    }
+    return () => pairRef.current[1]();
+  }, []);
+
+  return (
+    <CancelCtx value={pairRef.current[1]}>
+      <CtxRoot value={pairRef.current[0]}>
+        {children}
+      </CtxRoot>
+    </CancelCtx>
+  );
+}
+
+export const useCtx         = () => useContext(CtxRoot);
+export const useCancelScope = () => useContext(CancelCtx);
+```
+
+Components inside the scope derive from its context and can cancel the entire scope imperatively:
+
+```tsx
+function SearchPage() {
+  const ctx    = useCtx();
+  const cancel = useCancelScope();
+
+  return (
+    <>
+      <button onClick={() => cancel()}>Cancel all</button>
+      <Results ctx={ctx} />
+    </>
+  );
+}
+
+<CancelableScope>
+  <SearchPage />
+</CancelableScope>
+```
+
+Canceling from outside is the same — hold the `cancel` ref at the parent level and call it when needed, such as when a modal closes or a route changes.
+
+## Canceling on dependency change
+
+When a dependency changes, React runs the previous effect's cleanup before the new effect. This means in-flight requests from the previous render are automatically canceled.
+
+```ts
+useEffect(() => {
+  const [ctx, cancel] = context.withTimeout(parent, 3000);
+
+  searchApi(ctx, query).then(setResults).catch(() => {});
+
+  return cancel; // cancels previous query when `query` changes
+}, [query]);
+```
+
+## Avoiding stale closures with values
+
+If your context carries per-render values, create the derived context inside the effect so it captures the latest values.
+
+```ts
+useEffect(() => {
+  const [ctx, cancel] = context.withTimeout(
+    context.withValue(parent, userKey, currentUser),
+    5000,
+  );
+
+  doWork(ctx).catch(() => {});
+  return cancel;
+}, [currentUser]);
+```
+
+## React 19 — `use()` with signals
+
+In React 19, you can suspend on a promise derived from context cancellation. This is useful for integrating context-aware data fetching with Suspense boundaries.
+
+```ts
+async function fetchWithContext<T>(ctx: Context, fetcher: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  return fetcher(ctx.signal);
+}
+```
+
+Pass the resulting promise to `use()` inside a component wrapped in `<Suspense>`. The signal ensures the fetch is aborted if the component is unmounted before the boundary resolves.

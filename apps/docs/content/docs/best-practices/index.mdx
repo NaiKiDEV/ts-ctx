@@ -1,0 +1,43 @@
+---
+title: Best Practices
+description: Prescriptive patterns for using ts-ctx effectively in real applications.
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+# Best Practices
+
+These patterns reflect how ts-ctx is designed to be used across different environments and use cases. Each one is prescriptive — copy the code, adapt the names, apply the structure.
+
+<Cards>
+  <Card
+    title="Always Cancel"
+    href="/best-practices/always-cancel"
+    description="Why cancel must always be called and how to guarantee it with try/finally."
+  />
+  <Card
+    title="Per-Request Context"
+    href="/best-practices/per-request-context"
+    description="Structuring context creation at the server request boundary for Node.js and edge runtimes."
+  />
+  <Card
+    title="React Integration"
+    href="/best-practices/react-integration"
+    description="Wiring context into React hooks and effects without leaking listeners on unmount."
+  />
+  <Card
+    title="Error Handling"
+    href="/best-practices/error-handling"
+    description="Distinguishing cancellation from real errors and propagating them correctly."
+  />
+  <Card
+    title="Timeout Budgets"
+    href="/best-practices/timeout-budgets"
+    description="Using deadline inheritance to enforce time limits across multi-step operations."
+  />
+  <Card
+    title="Testing"
+    href="/best-practices/testing"
+    description="Testing cancellation, timeouts, and value propagation with fake timers."
+  />
+</Cards>

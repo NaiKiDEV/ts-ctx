@@ -1,0 +1,12 @@
+{
+  "title": "Best Practices",
+  "pages": [
+    "index",
+    "always-cancel",
+    "per-request-context",
+    "react-integration",
+    "error-handling",
+    "timeout-budgets",
+    "testing"
+  ]
+}

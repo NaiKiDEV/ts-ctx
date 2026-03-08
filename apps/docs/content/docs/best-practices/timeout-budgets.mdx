@@ -1,0 +1,103 @@
+---
+title: Timeout Budgets
+description: Using deadline inheritance to enforce time limits across multi-step operations.
+---
+
+# Timeout Budgets
+
+A timeout budget is a total time limit shared across multiple operations. ts-ctx enforces this automatically through deadline inheritance: a child context can never have a later deadline than its parent.
+
+## The problem without budgets
+
+Without shared deadlines, each step gets its own independent timeout. If step A takes its full 5 seconds and step B takes its full 5 seconds, the total operation can take 10 seconds even if the caller expected a 6-second limit.
+
+```ts
+// ❌ each step gets a fresh timeout — total can exceed the caller's limit
+async function processOrder(parent: Context, orderId: string) {
+  const [ctx1, c1] = context.withTimeout(parent, 5000);
+  const payment = await chargePayment(ctx1, orderId).finally(c1);
+
+  const [ctx2, c2] = context.withTimeout(parent, 5000);
+  const shipment = await createShipment(ctx2, orderId).finally(c2);
+
+  return { payment, shipment };
+}
+```
+
+## Using a shared deadline
+
+Set the total budget once at the outer boundary. Each step inherits it. If the remaining time is already exhausted, each derived context is immediately canceled.
+
+```ts
+// ✓ the 8-second deadline is shared across all steps
+async function processOrder(parent: Context, orderId: string) {
+  const [ctx, cancel] = context.withTimeout(parent, 8000);
+  try {
+    const payment  = await chargePayment(ctx, orderId);
+    const shipment = await createShipment(ctx, orderId);
+    return { payment, shipment };
+  } finally {
+    cancel();
+  }
+}
+```
+
+If `chargePayment` takes 7 seconds, `createShipment` gets at most 1 second before `DeadlineExceeded` fires — the outer budget is respected automatically.
+
+## Nested step budgets
+
+You can give individual steps a shorter budget than the outer one. The effective deadline is always the earlier of the two.
+
+```ts
+async function processOrder(parent: Context, orderId: string) {
+  const [ctx, cancel] = context.withTimeout(parent, 8000); // 8s total
+  try {
+    // payment gets at most 3s (or less if the 8s is almost up)
+    const [payCtx, payCancel] = context.withTimeout(ctx, 3000);
+    const payment = await chargePayment(payCtx, orderId).finally(payCancel);
+
+    // shipment gets whatever is left of the 8s, capped at 4s
+    const [shipCtx, shipCancel] = context.withTimeout(ctx, 4000);
+    const shipment = await createShipment(shipCtx, orderId).finally(shipCancel);
+
+    return { payment, shipment };
+  } finally {
+    cancel();
+  }
+}
+```
+
+Because of deadline inheritance, passing a child timeout longer than the remaining budget is safe — ts-ctx silently clamps it to the parent's deadline.
+
+## API gateway pattern
+
+At the service boundary, read a deadline from an incoming request header and propagate it inward. This lets the calling service enforce end-to-end time budgets across multiple services.
+
+```ts
+function contextFromRequest(req: Request, parent: Context): [Context, CancelFunc] {
+  const deadlineHeader = req.headers.get("x-deadline");
+
+  if (deadlineHeader) {
+    const deadline = parseInt(deadlineHeader, 10);
+    if (!isNaN(deadline) && deadline > Date.now()) {
+      return context.withDeadline(parent, deadline);
+    }
+  }
+
+  return context.withTimeout(parent, 30_000); // default budget
+}
+```
+
+When forwarding to downstream services, attach the current context's deadline to the outgoing request:
+
+```ts
+async function callDownstream(ctx: Context, url: string) {
+  const headers: Record<string, string> = {};
+  if (ctx.deadline !== undefined) {
+    headers["x-deadline"] = String(ctx.deadline);
+  }
+  return fetch(url, { signal: ctx.signal, headers });
+}
+```
+
+This propagates the time budget across service boundaries without each service needing to know the total limit.
