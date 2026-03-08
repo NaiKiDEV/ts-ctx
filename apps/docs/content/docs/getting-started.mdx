@@ -1,0 +1,111 @@
+---
+title: Getting Started
+description: Install ts-ctx and learn the basics in a few minutes.
+---
+
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+# Getting Started
+
+## Installation
+
+<Tabs groupId="pkg-manager" items={['pnpm', 'npm', 'yarn', 'bun']}>
+  <Tab value="pnpm">
+    ```bash
+    pnpm add @naikidev/ts-ctx
+    ```
+  </Tab>
+  <Tab value="npm">
+    ```bash
+    npm install @naikidev/ts-ctx
+    ```
+  </Tab>
+  <Tab value="yarn">
+    ```bash
+    yarn add @naikidev/ts-ctx
+    ```
+  </Tab>
+  <Tab value="bun">
+    ```bash
+    bun add @naikidev/ts-ctx
+    ```
+  </Tab>
+</Tabs>
+
+## Creating a context
+
+Every context chain starts from `context.background()` — a root context that is never canceled.
+
+```ts
+import { context } from "@naikidev/ts-ctx";
+
+const ctx = context.background();
+```
+
+## Cancellation
+
+Use `context.withCancel` to create a derived context you can cancel manually.
+
+```ts
+const [child, cancel] = context.withCancel(ctx);
+
+// Pass the context along
+doWork(child);
+
+// Cancel when done (or on error)
+cancel();
+```
+
+Canceling a parent propagates to all derived contexts automatically.
+
+## Timeouts and deadlines
+
+```ts
+// Cancel after 5 seconds
+const [ctx, cancel] = context.withTimeout(parent, 5000);
+
+// Cancel at a specific time
+const [ctx, cancel] = context.withDeadline(parent, Date.now() + 5000);
+```
+
+Always call `cancel()` when done — it cleans up event listeners and timers.
+
+```ts
+const [ctx, cancel] = context.withTimeout(parent, 5000);
+try {
+  await doWork(ctx);
+} finally {
+  cancel();
+}
+```
+
+## AbortSignal interop
+
+Every context has a `.signal` property that is a native `AbortSignal`. Pass it directly to any API that accepts one.
+
+```ts
+const [ctx, cancel] = context.withTimeout(parent, 3000);
+
+try {
+  const res = await fetch("/api/data", { signal: ctx.signal });
+  return await res.json();
+} finally {
+  cancel();
+}
+```
+
+## Request-scoped values
+
+Use `context.createKey` to create a type-safe key, then store and retrieve values through the context chain.
+
+```ts
+const requestIdKey = context.createKey<string>("requestId");
+
+// Store
+const ctx = context.withValue(parent, requestIdKey, crypto.randomUUID());
+
+// Retrieve — type is string | undefined
+const requestId = ctx.value(requestIdKey);
+```
+
+Values are inherited by derived contexts and never accessible outside the chain where they were set.

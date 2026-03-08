@@ -1,0 +1,73 @@
+---
+title: Types
+description: TypeScript types exported by ts-ctx.
+---
+
+# Types
+
+```ts
+import type { Context, ContextKey, CancelFunc } from "@naikidev/ts-ctx";
+```
+
+---
+
+## `Context`
+
+The shape of every context object.
+
+```ts
+type Context = {
+  readonly signal: AbortSignal
+  readonly deadline: number | undefined
+  value<T>(key: ContextKey<T>): T | undefined
+}
+```
+
+| Property | Description |
+| --- | --- |
+| `signal` | Native `AbortSignal` — passes directly to `fetch`, streams, Node APIs |
+| `deadline` | Cancellation deadline as epoch milliseconds, or `undefined` if none |
+| `value(key)` | Retrieves a stored value by key, walking up the context chain |
+
+---
+
+## `ContextKey<T>`
+
+A branded symbol that associates a type `T` with a context value slot. Created via `context.createKey<T>()`.
+
+```ts
+type ContextKey<T> = symbol & { readonly [brand]: T }
+```
+
+The `T` parameter is a compile-time phantom — it exists only to make `.value(key)` return `T | undefined` rather than `unknown`. No runtime overhead.
+
+```ts
+const key = context.createKey<User>("user");
+// key: ContextKey<User>
+
+ctx.value(key) // User | undefined
+```
+
+---
+
+## `CancelFunc`
+
+The function returned as the second element of `withCancel`, `withTimeout`, and `withDeadline` tuples.
+
+```ts
+type CancelFunc = (reason?: unknown) => void
+```
+
+- Calling without arguments sets `signal.reason` to `context.Canceled`
+- Passing a custom reason sets it to that value
+- Idempotent — safe to call multiple times
+- Cleans up parent event listeners and clears timers
+
+```ts
+const [ctx, cancel] = context.withTimeout(parent, 5000);
+
+// all equivalent ways to cancel:
+cancel()
+cancel(context.Canceled)
+cancel(new Error("aborted by user"))
+```

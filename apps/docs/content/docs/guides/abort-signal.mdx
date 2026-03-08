@@ -1,0 +1,68 @@
+---
+title: AbortSignal Interop
+description: Using ts-ctx contexts with fetch, streams, and other AbortSignal-aware APIs.
+---
+
+# AbortSignal Interop
+
+Every ts-ctx context exposes a `.signal` property that is a native `AbortSignal`. This means ts-ctx integrates with any API that accepts an `AbortSignal` — with zero adapter code.
+
+## fetch
+
+```ts
+async function loadUser(ctx: Context, userId: string) {
+  const res = await fetch(`/api/users/${userId}`, { signal: ctx.signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+```
+
+If the context is canceled before the request completes, `fetch` throws an `AbortError`.
+
+## Node.js streams
+
+```ts
+import { pipeline } from "node:stream/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+
+async function copyFile(ctx: Context, src: string, dest: string) {
+  await pipeline(
+    createReadStream(src),
+    createWriteStream(dest),
+    { signal: ctx.signal }
+  );
+}
+```
+
+## EventTarget / addEventListener
+
+```ts
+function onceWithContext<T extends Event>(
+  ctx: Context,
+  target: EventTarget,
+  event: string,
+  handler: (e: T) => void,
+) {
+  target.addEventListener(event, handler as EventListener, {
+    signal: ctx.signal,
+  });
+}
+```
+
+The listener is automatically removed when the context is canceled.
+
+## Combining with external AbortSignals
+
+If you receive an `AbortSignal` from outside (e.g., a framework's request signal) and want to integrate it with ts-ctx:
+
+```ts
+function fromSignal(parent: Context, external: AbortSignal): [Context, CancelFunc] {
+  const [ctx, cancel] = context.withCancel(parent);
+
+  external.addEventListener("abort", () => cancel(external.reason), { once: true });
+
+  return [ctx, cancel];
+}
+```
+
+This way, either the external signal or the parent context being canceled will abort your derived context.

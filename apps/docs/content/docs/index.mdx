@@ -1,0 +1,49 @@
+---
+title: Introduction
+description: Go's context pattern for TypeScript, built on AbortSignal.
+---
+
+# ts-ctx
+
+**ts-ctx** brings Go's `context` package to TypeScript — adapted for the JavaScript ecosystem.
+
+In Go, `context` is the standard way to carry cancellation signals and request-scoped values across API boundaries. In TypeScript, the native equivalent for cancellation is `AbortSignal`. ts-ctx bridges both worlds: every context exposes a `signal` property, so it works directly with `fetch`, Node.js streams, and any library that understands `AbortSignal`.
+
+## Core concepts
+
+| Concept | Description |
+| --- | --- |
+| **Context** | Immutable value carrying a cancellation signal, optional deadline, and key-value pairs |
+| **Cancel function** | Cancels a derived context and all of its children |
+| **Deadline** | An epoch-ms timestamp at which a context automatically cancels |
+| **Context key** | A type-safe symbol used to store and retrieve request-scoped values |
+
+## Why not just use AbortController?
+
+`AbortController` is great for a single cancellation point. ts-ctx adds:
+
+- **Hierarchy** — canceling a parent automatically cancels all derived contexts
+- **Deadlines & timeouts** — contexts cancel themselves at a specified time, with cleanup
+- **Request-scoped values** — type-safe key-value pairs that flow through the context chain
+- **Composability** — combine multiple cancellation sources cleanly
+
+## Quick example
+
+```ts
+import { context, type Context } from "@naikidev/ts-ctx";
+
+const userKey = context.createKey<string>("userId");
+
+async function handleRequest(ctx: Context) {
+  const [child, cancel] = context.withTimeout(ctx, 5000);
+  try {
+    const res = await fetch("/api/data", { signal: child.signal });
+    return await res.json();
+  } finally {
+    cancel();
+  }
+}
+
+const root = context.withValue(context.background(), userKey, "user-123");
+handleRequest(root);
+```

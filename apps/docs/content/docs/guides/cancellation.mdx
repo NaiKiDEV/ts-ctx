@@ -1,0 +1,80 @@
+---
+title: Cancellation
+description: How cancellation propagates through a context tree.
+---
+
+# Cancellation
+
+ts-ctx contexts form a tree. Canceling a node cancels all of its descendants — but never its ancestors.
+
+```
+background
+  └── withCancel (parent)
+        ├── withTimeout (child A) ← canceled when parent is canceled
+        └── withValue  (child B) ← canceled when parent is canceled
+```
+
+## The cancel function
+
+`withCancel`, `withTimeout`, and `withDeadline` all return a `[Context, CancelFunc]` tuple. Always call cancel when the work is done.
+
+```ts
+const [ctx, cancel] = context.withCancel(parent);
+
+try {
+  await doWork(ctx);
+} finally {
+  cancel();
+}
+```
+
+Failing to call cancel leaks the event listener registered on the parent's signal.
+
+## Custom cancellation reasons
+
+```ts
+const [ctx, cancel] = context.withCancel(parent);
+
+cancel(new Error("user logged out"));
+
+ctx.signal.reason // Error: "user logged out"
+```
+
+If no reason is provided, `ctx.signal.reason` is set to `context.Canceled`.
+
+## Checking why a context was canceled
+
+```ts
+if (ctx.signal.aborted) {
+  if (ctx.signal.reason === context.DeadlineExceeded) {
+    // timed out
+  } else if (ctx.signal.reason === context.Canceled) {
+    // manually canceled
+  } else {
+    // custom reason
+  }
+}
+```
+
+## Deriving from an already-canceled context
+
+If you call `withCancel` on a context that is already aborted, the returned child is immediately aborted with the same reason.
+
+```ts
+const [parent, cancelParent] = context.withCancel(context.background());
+cancelParent();
+
+const [child] = context.withCancel(parent);
+child.signal.aborted // true — immediately
+```
+
+## Deadline inheritance
+
+If a parent has a deadline earlier than the one you pass to `withDeadline`, the child silently inherits the parent's deadline. This prevents accidentally extending a parent's timeout.
+
+```ts
+const [parent] = context.withTimeout(ctx, 1000);  // 1 second
+const [child]  = context.withTimeout(parent, 10000); // asks for 10s
+
+child.deadline === parent.deadline // true — capped at 1 second
+```

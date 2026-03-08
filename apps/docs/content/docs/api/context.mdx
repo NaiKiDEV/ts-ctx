@@ -1,0 +1,128 @@
+---
+title: context
+description: The context namespace — all functions for creating and deriving contexts.
+---
+
+# `context`
+
+All ts-ctx functionality is available via the named `context` export.
+
+```ts
+import { context } from "@naikidev/ts-ctx";
+```
+
+---
+
+## `context.background()`
+
+Returns the root context. It is never canceled, has no deadline, and carries no values. All context chains start here.
+
+```ts
+const ctx = context.background();
+
+ctx.signal.aborted  // false — always
+ctx.deadline        // undefined — always
+```
+
+Returns the same singleton instance on every call.
+
+---
+
+## `context.withCancel(parent)`
+
+Returns a derived context and a cancel function. Calling `cancel()` aborts the context's signal and cleans up listeners. Canceling the parent also cancels the child.
+
+```ts
+const [ctx, cancel] = context.withCancel(parent);
+
+cancel();                      // reason: context.Canceled
+cancel(new Error("my reason")) // custom reason
+```
+
+The cancel function is idempotent — calling it multiple times is safe. The returned context inherits the parent's `deadline` and values.
+
+---
+
+## `context.withTimeout(parent, ms)`
+
+Returns a derived context that cancels automatically after `ms` milliseconds. Equivalent to `withDeadline(parent, Date.now() + ms)`.
+
+```ts
+const [ctx, cancel] = context.withTimeout(parent, 5000);
+try {
+  await doWork(ctx);
+} finally {
+  cancel(); // clears the timer
+}
+```
+
+If the timeout fires, `ctx.signal.reason === context.DeadlineExceeded`.
+
+---
+
+## `context.withDeadline(parent, deadline)`
+
+Returns a derived context that cancels at the given `deadline` (epoch milliseconds). If `parent` already has an earlier deadline, it inherits the parent's deadline instead and the new one is ignored.
+
+```ts
+const deadline = Date.now() + 10_000;
+const [ctx, cancel] = context.withDeadline(parent, deadline);
+
+ctx.deadline // the effective deadline (epoch ms)
+```
+
+---
+
+## `context.withValue(parent, key, value)`
+
+Returns a derived context carrying a type-safe key-value pair. The value is accessible via `.value(key)` on the returned context or any context derived from it.
+
+```ts
+const userKey = context.createKey<User>("user");
+const ctx = context.withValue(parent, userKey, currentUser);
+
+ctx.value(userKey) // User | undefined
+```
+
+The returned context shares the parent's `signal` and `deadline` — `withValue` does not create a new `AbortController`.
+
+---
+
+## `context.createKey<T>(description?)`
+
+Creates a new type-safe context key. Each call returns a unique key — two keys with the same description are not equal.
+
+```ts
+const requestIdKey = context.createKey<string>("requestId");
+const traceIdKey   = context.createKey<string>("traceId");
+
+// requestIdKey !== traceIdKey — distinct despite same type
+```
+
+The `description` is optional and only used for debugging (`Symbol(description)`).
+
+---
+
+## `context.Canceled`
+
+Sentinel `Error` used as the default reason when `cancel()` is called without an argument.
+
+```ts
+const [ctx, cancel] = context.withCancel(parent);
+cancel();
+
+ctx.signal.reason === context.Canceled // true
+```
+
+---
+
+## `context.DeadlineExceeded`
+
+Sentinel `Error` set as the signal's reason when a timeout or deadline fires.
+
+```ts
+const [ctx] = context.withTimeout(parent, 100);
+await delay(200);
+
+ctx.signal.reason === context.DeadlineExceeded // true
+```

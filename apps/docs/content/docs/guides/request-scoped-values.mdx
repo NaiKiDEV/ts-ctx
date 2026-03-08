@@ -1,0 +1,83 @@
+---
+title: Request-Scoped Values
+description: Passing type-safe values through a context chain without prop drilling.
+---
+
+# Request-Scoped Values
+
+`context.withValue` lets you attach typed values to a context. These values flow down to all derived contexts without needing to thread them through every function parameter.
+
+## Creating keys
+
+Each key is a unique symbol with a generic type parameter. Create keys at module scope — never inside a function.
+
+```ts
+// keys.ts
+import { context } from "@naikidev/ts-ctx";
+
+export const requestIdKey = context.createKey<string>("requestId");
+export const userKey      = context.createKey<User>("user");
+export const loggerKey    = context.createKey<Logger>("logger");
+```
+
+Two keys with the same description are not equal — the description is just for debugging.
+
+```ts
+const a = context.createKey<string>("x");
+const b = context.createKey<string>("x");
+
+a === b // false
+```
+
+## Storing values
+
+```ts
+import { requestIdKey, userKey } from "./keys";
+
+const ctx = context.withValue(
+  context.withValue(context.background(), requestIdKey, crypto.randomUUID()),
+  userKey,
+  await getUser(session),
+);
+```
+
+Chain `withValue` calls for multiple values. Each call returns a new context — the parent is unchanged.
+
+## Retrieving values
+
+```ts
+function logRequest(ctx: Context) {
+  const requestId = ctx.value(requestIdKey); // string | undefined
+  const user = ctx.value(userKey);           // User | undefined
+
+  console.log(`[${requestId}] ${user?.name}`);
+}
+```
+
+`.value()` walks up the context chain until it finds a matching key or reaches the root.
+
+## Shadowing values
+
+A child context can override a parent's value for the same key. The parent is unaffected.
+
+```ts
+const parent = context.withValue(ctx, userKey, adminUser);
+const child  = context.withValue(parent, userKey, guestUser);
+
+parent.value(userKey) // adminUser
+child.value(userKey)  // guestUser
+```
+
+## Signal sharing
+
+`withValue` does not create a new `AbortController`. The returned context shares the parent's signal — canceling the parent cancels the value-carrying context too.
+
+```ts
+const [base, cancel] = context.withCancel(context.background());
+const valued = context.withValue(base, userKey, currentUser);
+
+cancel();
+
+valued.signal.aborted // true
+valued.signal === base.signal // true
+```
