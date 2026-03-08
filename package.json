@@ -1,0 +1,18 @@
+{
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @naikidev/ts-ctx-docs dev",
+    "build": "pnpm --filter @naikidev/ts-ctx build",
+    "test": "pnpm --filter @naikidev/ts-ctx test",
+    "test:watch": "pnpm --filter @naikidev/ts-ctx test:watch",
+    "docs:dev": "pnpm --filter @naikidev/ts-ctx-docs dev",
+    "docs:build": "pnpm --filter @naikidev/ts-ctx-docs build",
+    "typecheck": "pnpm --filter @naikidev/ts-ctx-docs typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp"
+    ]
+  }
+}
