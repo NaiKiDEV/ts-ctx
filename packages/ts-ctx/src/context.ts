@@ -99,7 +99,11 @@ export const context = {
       cleanup();
       ac.abort(DeadlineExceeded);
     }, ms);
-    if (typeof timer === "object") timer.unref();
+
+    // NodeJS Timeout object
+    if (typeof timer === "object") {
+      (timer as any).unref?.();
+    }
 
     parent.signal.addEventListener("abort", onAbort, { once: true });
 
